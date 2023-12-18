@@ -1,7 +1,6 @@
 import "./style.css";
 import Phaser from "phaser";
-
-const TILE_SIZE = 18;
+import {HEIGHT, WIDTH, TILE_SIZE, events, COIN_COLLECTED_EVENT, scoreSpan, restartButton, restartDialog, marbleTiles, rockTiles, sandTiles, stoneTiles} from "./constants.js";
 
 const PLAYER_ANIMS = {
 	idle: "idle",
@@ -9,7 +8,37 @@ const PLAYER_ANIMS = {
 	run: "run",
 	jump: "jump",
 	cheer: "cheer",
+	fall: "fall",
 };
+
+class UiScene extends Phaser.Scene {
+	constructor() {
+		super("ui-scene");
+
+		this.scoreText;
+	}
+
+	preload() {
+		this.load.image("coin", "coin.png");
+	}
+
+	create() {
+		let coin = this.add.image(32, 32, "coin");
+		coin.setScale(0.5);
+
+		this.scoreText = this.add.text(55, 10, "0", {
+			color: "#000",
+			fontSize: 40,
+			fontFamily: "fantasy, arial, sans-serif",
+		});
+
+		events.addListener(COIN_COLLECTED_EVENT, this.handleCoinCollected, this);
+	}
+
+	handleCoinCollected(score) {
+		this.scoreText.setText(score);
+	}
+}
 
 class MainScene extends Phaser.Scene {
 	constructor() {
@@ -18,6 +47,21 @@ class MainScene extends Phaser.Scene {
 		this.player;
 		this.map;
 		this.cursors;
+		this.coins;
+
+		this.coinNoise;
+		this.jumpNoise;
+		this.music;
+
+		this.enemySpawnPoints = [];
+		this.enemies;
+
+		this.score = 0;
+	}
+
+	init() {
+		this.scene.launch("ui-scene");
+		this.score = 0;
 	}
 
 	preload() {
@@ -28,51 +72,121 @@ class MainScene extends Phaser.Scene {
 		this.load.image("sand", "tilesets/sand.png");
 		this.load.image("stone", "tilesets/stone.png");
 
-		this.load.tilemapTiledJSON("map", "tilesets/mapmapmapmapmapmap2.json");
+		this.load.tilemapTiledJSON("map", "tilesets/map.json");
+
+		this.load.image("coin", "coin.png");
+		this.load.image("enemy", "spikeBall.png");
+
+		this.load.audio("coin-noise", "coin.mp3");
+		this.load.audio("jump-noise", "jump.wav");
+		this.load.audio("music", "background-music.mp3");
 	}
 
 	create() {
-		// object destructuring
+		let playerSpawn = {
+			x: WIDTH / 2,
+			y: HEIGHT / 2,
+		};
 
-		// const height = this.scale.height;
-		// const width = this.scale.width;
-		const { height, width } = this.scale;
+		this.physics.world.setBounds(0, 0, WIDTH, HEIGHT);
+
+		this.coinNoise = this.sound.add("coin-noise");
+		this.jumpNoise = this.sound.add("jump-noise", {
+			volume: 0.5,
+		});
+		this.music = this.sound.add("music", {
+			loop: true,
+			volume: 0.5,
+		});
+
+		//this.music.play();
 
 		this.map = this.make.tilemap({ key: "map" });
 
-		const marbleTiles = this.map.addTilesetImage("marble", "marble");
-		const rockTiles = this.map.addTilesetImage("rock", "rock");
-		const sandTiles = this.map.addTilesetImage("sand", "sand");
-		const stoneTiles = this.map.addTilesetImage("stone", "stone");
+		// object layer from Tiled
+		const objectLayer = this.map.getObjectLayer("Objects");
+		objectLayer.objects.forEach((o) => {
+			const { x = 0, y = 0, name, width = 0, height = 0 } = o;
+			switch (name) {
+				case "player-spawn":
+					playerSpawn.x = x + width / 2;
+					playerSpawn.y = y + height / 2;
+					break;
+				case "enemy-spawn":
+					this.enemySpawnPoints.push({
+						x: x + width / 2,
+						y: y + height / 2,
+					});
+					break;
+			}
+		});
 
 		this.map.createLayer(
-			"background-layer",
+			"Background",
 			[marbleTiles, rockTiles, sandTiles, stoneTiles],
 			0,
 			0
 		);
 
 		const platformLayer = this.map.createLayer(
-			"layer1",
+			"Platforms",
 			[marbleTiles, rockTiles, sandTiles, stoneTiles],
 			0,
 			0
 		);
+		platformLayer.setCollisionByProperty({ collides: true });
+
+		this.coins = this.physics.add.group({
+			key: "coin",
+			quantity: 12,
+			setXY: { x: TILE_SIZE * 4, y: 0, stepX: WIDTH / 11 },
+			setScale: { x: 0.25, y: 0.25 },
+		});
+
+		this.coins.children.iterate((coin) => {
+			coin
+				.setCircle(40)
+				.setCollideWorldBounds(true)
+				.setBounce(Phaser.Math.FloatBetween(0.4, 0.8))
+				.setVelocityX(Phaser.Math.FloatBetween(-10, 10));
+		});
+
+		this.physics.add.collider(this.coins, platformLayer);
+		this.physics.add.collider(this.coins, this.coins);
 
 		this.player = this.physics.add.sprite(
-			width / 2,
-			height / 2,
+			playerSpawn.x,
+			playerSpawn.y,
 			"robot",
 			"character_robot_idle.png"
 		);
 
-		this.player.setCollideWorldBounds(true);
-		this.player.setBounce(0.5);
+		this.physics.add.overlap(
+			this.player,
+			this.coins,
+			this.collectCoin,
+			undefined,
+			this
+		);
+
+		this.physics.add.collider(this.player, platformLayer);
+
+		this.player
+			.setCollideWorldBounds(true)
+			.setBounce(0.2)
+			.setSize(TILE_SIZE * 2, TILE_SIZE * 4.5)
+			.setScale(0.5)
+			.setOffset(TILE_SIZE * 1.7, TILE_SIZE * 2.6);
 
 		// single frame
 		this.player.anims.create({
 			key: PLAYER_ANIMS.idle,
 			frames: [{ key: "robot", frame: "character_robot_idle.png" }],
+		});
+
+		this.player.anims.create({
+			key: PLAYER_ANIMS.fall,
+			frames: [{ key: "robot", frame: "character_robot_fall.png" }],
 		});
 
 		this.player.anims.create({
@@ -127,6 +241,22 @@ class MainScene extends Phaser.Scene {
 			upArrow: Phaser.Input.Keyboard.KeyCodes.UP,
 			up: Phaser.Input.Keyboard.KeyCodes.W,
 		});
+
+		this.cameras.main.setBounds(0, 0, WIDTH, HEIGHT);
+		this.cameras.main.startFollow(this.player);
+		this.cameras.main.zoom = 1.5;
+
+		this.enemies = this.physics.add.group();
+		this.physics.add.collider(this.enemies, platformLayer);
+		this.physics.add.collider(this.enemies, this.enemies);
+		this.physics.add.collider(this.enemies, this.coins);
+		this.physics.add.overlap(
+			this.player,
+			this.enemies,
+			this.hitPlayer,
+			undefined,
+			this
+		);
 	}
 
 	update() {
@@ -144,17 +274,16 @@ class MainScene extends Phaser.Scene {
 				this.cursors.jump.isDown) &&
 			this.player.body.onFloor()
 		) {
-			this.player.setVelocityY(-150);
+			this.jumpNoise.play();
+			this.player.setVelocityY(-300);
 		}
 
-		// let x = this.player.body.velocity.x;
-		// let y = this.player.body.velocity.y;
-		let {x, y} = this.player.body.velocity.x;
-		
+		let { x, y } = this.player.body.velocity;
+
 		this.player.flipX = x < 0;
 
 		if (this.player.body.onFloor()) {
-			if(x === 0) {
+			if (x === 0) {
 				this.player.play(PLAYER_ANIMS.idle);
 			} else {
 				this.player.play(PLAYER_ANIMS.run, true);
@@ -165,23 +294,55 @@ class MainScene extends Phaser.Scene {
 			} else {
 				this.player.play(PLAYER_ANIMS.fall, true);
 			}
-			}
 		}
 	}
 
+	collectCoin(player, coin) {
+		this.score++;
+		events.emit(COIN_COLLECTED_EVENT, this.score);
+
+		coin.disableBody(true, true);
+		this.coinNoise.play();
+
+		let spawn =
+			this.enemySpawnPoints[
+				Phaser.Math.Between(0, this.enemySpawnPoints.length - 1)
+			];
+		let enemy = this.enemies.create(spawn.x, spawn.y, "enemy");
+		enemy
+			.setCollideWorldBounds(true)
+			.setBounce(1)
+			.setVelocity(Phaser.Math.FloatBetween(-200, 200), 20)
+			.setCircle(60, 12, 14)
+			.setScale(0.25);
+	}
+
+	hitPlayer(player, enemy) {
+		this.physics.pause();
+		this.player.setTint(0x0000bb); // light blue death color for Hawkin
+
+		restartDialog.showModal();
+	}
+}
 
 /** @type {Phaser.Types.Core.GameConfig} */
 const config = {
 	type: Phaser.WEBGL,
-	width: 44 * TILE_SIZE,
-	height: 33 * TILE_SIZE,
-	scene: [MainScene],
+	width: window.innerWidth,
+	height: window.innerHeight,
+	scene: [MainScene, UiScene],
 	physics: {
 		default: "arcade",
 		arcade: {
 			gravity: { y: 300 },
+			debug: true,
 		},
 	},
 };
 
 const game = new Phaser.Game(config);
+
+restartButton.addEventListener("click", () => {
+	game.scene.start("main-scene");
+	restartDialog.close();
+});
